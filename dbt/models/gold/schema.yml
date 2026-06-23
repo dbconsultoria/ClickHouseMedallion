@@ -1,0 +1,89 @@
+version: 2
+
+models:
+  - name: gold_order_summary
+    description: "Visão consolidada por pedido: receita total, volume de itens e ticket médio."
+    columns:
+      - name: order_code
+        description: "PK do pedido"
+        tests:
+          - not_null
+          - unique
+      - name: order_date
+        tests:
+          - not_null
+      - name: customer_name
+        tests:
+          - not_null
+      - name: total_items
+        tests:
+          - not_null
+      - name: total_revenue
+        tests:
+          - not_null
+      - name: avg_item_value
+        tests:
+          - not_null
+
+  - name: gold_sales_by_product
+    description: "Receita e volume agregados por produto — todos os tempos."
+    columns:
+      - name: product_code
+        tests:
+          - not_null
+      - name: product_description
+        tests:
+          - not_null
+      - name: is_active
+        description: "Flag de produto ativo. accepted_values omitido: NOT IN (UNION subquery) não é suportado pelo ClickHouse 24.8."
+        tests:
+          - not_null
+      - name: total_orders
+        tests:
+          - not_null
+      - name: total_revenue
+        tests:
+          - not_null
+
+  - name: gold_sales_by_category
+    description: "Receita agregada por categoria com participação percentual sobre o total geral."
+    columns:
+      - name: category_description
+        tests:
+          - not_null
+      - name: total_revenue
+        tests:
+          - not_null
+      - name: revenue_share_pct
+        tests:
+          - not_null
+
+  - name: gold_sales_by_customer
+    description: "LTV e comportamento de compra agregados por cliente — todos os tempos."
+    columns:
+      - name: customer_email
+        tests:
+          - not_null
+      - name: customer_name
+        tests:
+          - not_null
+      - name: total_orders
+        tests:
+          - not_null
+      - name: total_revenue
+        tests:
+          - not_null
+
+  - name: gold_sales_by_period
+    description: "Receita mensal com crescimento mês a mês (MoM). prev_month_revenue e mom_growth_pct são NULL no primeiro mês."
+    columns:
+      - name: period
+        tests:
+          - not_null
+          - unique
+      - name: total_orders
+        tests:
+          - not_null
+      - name: total_revenue
+        tests:
+          - not_null

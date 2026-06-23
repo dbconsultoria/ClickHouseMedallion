@@ -21,3 +21,7 @@ models:
       +materialized: table
       +engine: 'MergeTree()'
       +schema: silver
+    gold:
+      +materialized: table
+      +engine: 'MergeTree()'
+      +schema: gold

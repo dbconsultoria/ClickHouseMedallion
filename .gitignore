@@ -13,14 +13,6 @@ build/
 .vscode/
 *.iml
 
-# Airbyte temp extracts (created during setup debugging)
-airbyte/server-app/
-airbyte/server-jar-extract/
-airbyte/worker-jar-extract/
-airbyte/worker.jar
-airbyte/upstream.yaml
-airbyte/upstream.env
-
 # OS
 .DS_Store
 Thumbs.db
@@ -32,3 +24,19 @@ desktop.ini
 # Environment files with secrets
 .env
 *.env.local
+
+# Airbyte temp extracts (created during setup debugging)
+airbyte/server-app/
+airbyte/server-jar-extract/
+airbyte/worker-jar-extract/
+airbyte/worker.jar
+airbyte/upstream.yaml
+airbyte/upstream.env
+
+# dbt — generated artifacts (reproducible, not source)
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+
+# dbt — user-local config (machine-specific)
+dbt/.user.yml

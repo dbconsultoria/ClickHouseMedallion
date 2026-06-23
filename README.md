@@ -110,16 +110,18 @@ The Silver layer cleans, types, and enriches the Bronze tables. It is managed en
 
 All Silver tables include audit columns `_ingested_at` and `_normalized_at` (renamed from Airbyte metadata). Airbyte internal columns (`_airbyte_ab_id`, hashids) are dropped.
 
-### DAG (dependency order)
+### DAG — full pipeline (Bronze → Silver → Gold)
 
 ```
 bronze.tbcategories ──► silver_categories ──┐
-                                             ├──► silver_products ──┐
-bronze.tbproducts ───────────────────────────┘                      │
-                                                                     ├──► silver_order_details
-bronze.tbcustomers ──► silver_customers ──► silver_orders ──────────┘
-bronze.tborders ─────────────────────────────┘
-bronze.tborderdetail ────────────────────────────────────────────────┘
+                                             ├──► silver_products ──┬──► gold_sales_by_product
+bronze.tbproducts ───────────────────────────┘                      │    gold_sales_by_category
+                                                                     │
+bronze.tbcustomers ──► silver_customers ──┐                         │
+                                          ├──► silver_orders ───────┼──► gold_order_summary
+bronze.tborders ──────────────────────────┘                         │    gold_sales_by_customer
+                                                                     │    gold_sales_by_period
+bronze.tborderdetail ──► silver_order_details ──────────────────────┘
 ```
 
 ### Running dbt
@@ -133,14 +135,18 @@ pip install dbt-core dbt-clickhouse
 # Validate config and ClickHouse connection
 dbt debug --profiles-dir .
 
-# Materialize all Silver tables
+# Materialize all layers (Silver + Gold, in DAG order)
 dbt run --profiles-dir .
 
-# Run data quality tests (not_null, unique, relationships — 25 tests)
+# Run data quality tests (48 tests across Silver and Gold)
 dbt test --profiles-dir .
 
+# Run only one layer
+dbt run --profiles-dir . --select silver
+dbt run --profiles-dir . --select gold
+
 # Run a single model and its upstream dependencies
-dbt run --profiles-dir . --select +silver_products
+dbt run --profiles-dir . --select +gold_sales_by_product
 
 # Re-run after a Bronze sync (full refresh)
 dbt run --profiles-dir . --full-refresh
@@ -173,6 +179,60 @@ LIMIT 10;
 SELECT orders_code, product_description, quantity, sale_value, line_total
 FROM silver.silver_order_details
 LIMIT 10;
+```
+
+---
+
+## Gold Layer — dbt
+
+The Gold layer aggregates and enriches Silver data into analytical marts ready for consumption. It writes to the `gold` database in ClickHouse.
+
+### Models
+
+| Gold table | Description | Key metrics |
+|---|---|---|
+| `gold.gold_order_summary` | One row per order | `total_items`, `total_revenue`, `avg_item_value` |
+| `gold.gold_sales_by_product` | Revenue and volume per product | `total_orders`, `total_quantity`, `total_revenue`, `avg_sale_value` |
+| `gold.gold_sales_by_category` | Revenue per category with share % | `total_products_sold`, `total_revenue`, `revenue_share_pct` |
+| `gold.gold_sales_by_customer` | LTV and behaviour per customer | `total_orders`, `total_revenue`, `avg_order_value`, `days_as_customer` |
+| `gold.gold_sales_by_period` | Monthly revenue with MoM growth | `total_orders`, `total_revenue`, `prev_month_revenue`, `mom_growth_pct` |
+
+### Gold queries
+
+```sql
+-- Check all Gold tables
+SELECT name, engine, total_rows
+FROM system.tables
+WHERE database = 'gold'
+ORDER BY name;
+
+-- Order summary
+SELECT order_code, order_date, customer_name, total_items, total_revenue, avg_item_value
+FROM gold.gold_order_summary
+ORDER BY order_date DESC
+LIMIT 10;
+
+-- Top products by revenue
+SELECT product_description, category_description, total_orders, total_revenue
+FROM gold.gold_sales_by_product
+ORDER BY total_revenue DESC
+LIMIT 10;
+
+-- Category revenue share
+SELECT category_description, total_revenue, revenue_share_pct
+FROM gold.gold_sales_by_category
+ORDER BY total_revenue DESC;
+
+-- Top customers by LTV
+SELECT customer_name, total_orders, total_revenue, avg_order_value, days_as_customer
+FROM gold.gold_sales_by_customer
+ORDER BY total_revenue DESC
+LIMIT 10;
+
+-- Monthly revenue with MoM growth
+SELECT period, total_orders, total_revenue, prev_month_revenue, mom_growth_pct
+FROM gold.gold_sales_by_period
+ORDER BY year, month;
 ```
 
 ---
