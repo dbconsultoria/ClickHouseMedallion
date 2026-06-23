@@ -1,0 +1,19 @@
+version: 2
+
+sources:
+  - name: bronze
+    # No dbt-clickhouse, 'schema' mapeia para o banco ClickHouse (não há schema dentro do banco).
+    # 'database' é ignorado pelo adapter em instâncias single-node.
+    schema: bronze
+    description: "Dados brutos ingeridos pelo Airbyte OSS (MySQL → ClickHouse). Somente leitura."
+    tables:
+      - name: tbcategories
+        description: "Categorias de produtos"
+      - name: tbproducts
+        description: "Produtos com preço unitário, flag ativo e categoria FK"
+      - name: tbcustomers
+        description: "Clientes com nome, endereço, telefone, e-mail e data de nascimento"
+      - name: tborders
+        description: "Cabeçalhos de pedidos com FK para cliente"
+      - name: tborderdetail
+        description: "Itens de pedido com FK para produto e pedido, quantidade e valor total da linha"

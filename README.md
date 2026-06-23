@@ -1,6 +1,8 @@
-# ClickHouse Medallion Architecture — Bronze Layer
+# ClickHouse Medallion Architecture — Bronze + Silver
 
-Local implementation of the Bronze layer of a Medallion architecture using MySQL as the source, Airbyte OSS for ingestion, and ClickHouse as the destination.
+Local implementation of a Medallion architecture with Bronze and Silver layers. MySQL is the source, Airbyte OSS handles ingestion into ClickHouse (Bronze), and dbt transforms and enriches the data into the Silver layer.
+
+**Author:** Rodrigo Ribeiro — [LinkedIn](https://www.linkedin.com/in/rodrigo-ribeiro-pro/) · [Portfolio](https://dbconsultoria.github.io/)
 
 ---
 
@@ -9,8 +11,10 @@ Local implementation of the Bronze layer of a Medallion architecture using MySQL
 | Technology | Version | Role |
 |---|---|---|
 | MySQL | 8.0 | Source database (external, running on Docker) |
-| ClickHouse | 24.8 | Bronze layer analytical store |
-| Airbyte OSS | 0.50.33 | ELT ingestion pipeline |
+| Airbyte OSS | 0.50.33 | ELT ingestion pipeline (MySQL → Bronze) |
+| ClickHouse | 24.8 | Analytical store — Bronze and Silver layers |
+| dbt-core | 1.11.11 | Silver layer transformations |
+| dbt-clickhouse | 1.10.1 | dbt adapter for ClickHouse |
 
 ---
 
@@ -19,12 +23,26 @@ Local implementation of the Bronze layer of a Medallion architecture using MySQL
 ```
 ClickHouseMedallion/
 ├── clickhouse/
-│   └── docker-compose.yml        # ClickHouse + medallion_net network
+│   └── docker-compose.yml             # ClickHouse + medallion_net network
 ├── airbyte/
-│   ├── docker-compose.yml        # Airbyte OSS (7 services)
+│   ├── docker-compose.yml             # Airbyte OSS (7 services)
 │   └── config/
 │       └── dynamicconfig/
-│           └── development.yaml  # Temporal dynamic config (required)
+│           └── development.yaml       # Temporal dynamic config (required)
+├── dbt/                               # Silver layer — dbt project
+│   ├── dbt_project.yml
+│   ├── profiles.yml
+│   ├── macros/
+│   │   └── generate_schema_name.sql   # Overrides default schema naming
+│   └── models/
+│       ├── sources.yml                # Bronze source declarations
+│       └── silver/
+│           ├── schema.yml             # Documentation and data tests
+│           ├── silver_categories.sql
+│           ├── silver_products.sql
+│           ├── silver_customers.sql
+│           ├── silver_orders.sql
+│           └── silver_order_details.sql
 └── README.md
 ```
 
@@ -72,6 +90,89 @@ docker compose -f airbyte/docker-compose.yml up -d
 
 # 4. Wait for Airbyte server (~30–60 s)
 curl http://localhost:8001/api/v1/health
+```
+
+---
+
+## Silver Layer — dbt
+
+The Silver layer cleans, types, and enriches the Bronze tables. It is managed entirely by dbt and writes to the `silver` database in ClickHouse.
+
+### What dbt does per table
+
+| Silver table | Source | Transformations |
+|---|---|---|
+| `silver.silver_categories` | `bronze.tbcategories` | Types, remove Nullable, snake_case |
+| `silver.silver_products` | `bronze.tbproducts` | Types, `active → is_active (Bool)`, `salevalue → Decimal(18,2)`, JOIN → `category_description` |
+| `silver.silver_customers` | `bronze.tbcustomers` | Types, column rename to snake_case (`Name → name`, etc.), `BirthDate → birth_date (Date)` |
+| `silver.silver_orders` | `bronze.tborders` | Types, JOIN → `customer_name`, `customer_email` |
+| `silver.silver_order_details` | `bronze.tborderdetail` | Types, JOIN → `product_description`, `sale_value`, adds `line_total` |
+
+All Silver tables include audit columns `_ingested_at` and `_normalized_at` (renamed from Airbyte metadata). Airbyte internal columns (`_airbyte_ab_id`, hashids) are dropped.
+
+### DAG (dependency order)
+
+```
+bronze.tbcategories ──► silver_categories ──┐
+                                             ├──► silver_products ──┐
+bronze.tbproducts ───────────────────────────┘                      │
+                                                                     ├──► silver_order_details
+bronze.tbcustomers ──► silver_customers ──► silver_orders ──────────┘
+bronze.tborders ─────────────────────────────┘
+bronze.tborderdetail ────────────────────────────────────────────────┘
+```
+
+### Running dbt
+
+```bash
+cd dbt/
+
+# First time: install dependencies
+pip install dbt-core dbt-clickhouse
+
+# Validate config and ClickHouse connection
+dbt debug --profiles-dir .
+
+# Materialize all Silver tables
+dbt run --profiles-dir .
+
+# Run data quality tests (not_null, unique, relationships — 25 tests)
+dbt test --profiles-dir .
+
+# Run a single model and its upstream dependencies
+dbt run --profiles-dir . --select +silver_products
+
+# Re-run after a Bronze sync (full refresh)
+dbt run --profiles-dir . --full-refresh
+```
+
+### Known ClickHouse limitation
+
+The dbt built-in `accepted_values` test generates `NOT IN (UNION ALL subquery)`, which ClickHouse 24.8 does not support (`UNSUPPORTED_METHOD`). For `Bool` columns like `is_active` this test is omitted — the type system already enforces valid values.
+
+### Silver queries
+
+```sql
+-- Check all Silver tables
+SELECT name, engine, total_rows
+FROM system.tables
+WHERE database = 'silver'
+ORDER BY name;
+
+-- Products with category
+SELECT code, description, sale_value, is_active, category_description
+FROM silver.silver_products
+LIMIT 10;
+
+-- Orders with customer data
+SELECT code, customer_name, customer_email, order_date
+FROM silver.silver_orders
+LIMIT 10;
+
+-- Order details with product data
+SELECT orders_code, product_description, quantity, sale_value, line_total
+FROM silver.silver_order_details
+LIMIT 10;
 ```
 
 ---

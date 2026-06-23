@@ -1,0 +1,106 @@
+version: 2
+
+models:
+  - name: silver_categories
+    description: "Categorias limpas com tipos corretos e Nullable removido das colunas obrigatórias."
+    columns:
+      - name: code
+        description: "PK da categoria (Int32)"
+        tests:
+          - not_null
+          - unique
+      - name: description
+        description: "Nome da categoria"
+        tests:
+          - not_null
+
+  - name: silver_products
+    description: "Produtos com tipagem correta, flag is_active como Bool e category_description enriquecida via JOIN em silver_categories."
+    columns:
+      - name: code
+        description: "PK do produto (Int32)"
+        tests:
+          - not_null
+          - unique
+      - name: description
+        description: "Nome do produto"
+        tests:
+          - not_null
+      - name: sale_value
+        description: "Preço unitário de venda (Decimal(18,2))"
+        tests:
+          - not_null
+      - name: is_active
+        description: "Produto ativo (Bool). Tipo Bool já restringe a true/false — accepted_values omitido pois o ClickHouse não suporta NOT IN (UNION subquery)."
+        tests:
+          - not_null
+      - name: category_code
+        description: "FK para silver_categories.code (Int32)"
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('silver_categories')
+                field: code
+      - name: category_description
+        description: "Descrição da categoria (enriquecimento)"
+        tests:
+          - not_null
+
+  - name: silver_customers
+    description: "Clientes com nomes de colunas normalizados para snake_case e Nullable removido das obrigatórias."
+    columns:
+      - name: code
+        description: "PK do cliente (Int32)"
+        tests:
+          - not_null
+          - unique
+      - name: name
+        tests:
+          - not_null
+      - name: email
+        tests:
+          - not_null
+
+  - name: silver_orders
+    description: "Pedidos com customer_name e customer_email enriquecidos via JOIN em silver_customers."
+    columns:
+      - name: code
+        description: "PK do pedido (Int32)"
+        tests:
+          - not_null
+          - unique
+      - name: customer_code
+        description: "FK para silver_customers.code (Int32)"
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('silver_customers')
+                field: code
+      - name: order_date
+        tests:
+          - not_null
+
+  - name: silver_order_details
+    description: "Itens de pedido com product_description e sale_value enriquecidos via JOIN em silver_products."
+    columns:
+      - name: orders_code
+        description: "FK para silver_orders.code (Int32)"
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('silver_orders')
+                field: code
+      - name: product_code
+        description: "FK para silver_products.code (Int32)"
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('silver_products')
+                field: code
+      - name: quantity
+        tests:
+          - not_null
