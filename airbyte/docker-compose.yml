@@ -1,0 +1,189 @@
+version: "3.8"
+
+# Run AFTER clickhouse/docker-compose.yml (which creates medallion_net).
+# Start: docker compose -f airbyte/docker-compose.yml up -d
+# UI:    http://localhost:8000   (no login required on OSS 0.50.x)
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "100m"
+    max-file: "5"
+
+networks:
+  # Internal bus — Airbyte services talk to each other here
+  airbyte_internal:
+    name: airbyte_internal
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24
+  # Shared network — lets workers reach the `clickhouse` container by name
+  medallion_net:
+    external: true
+
+volumes:
+  airbyte_db:
+    name: airbyte_db
+  airbyte_workspace:
+    name: airbyte_workspace
+
+services:
+
+  # ── State database ──────────────────────────────────────────────────────────
+  airbyte-db:
+    image: postgres:13-alpine
+    container_name: airbyte-db
+    logging: *default-logging
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: airbyte
+      POSTGRES_USER: airbyte
+      POSTGRES_PASSWORD: airbyte
+    volumes:
+      - airbyte_db:/var/lib/postgresql/data
+    networks:
+      - airbyte_internal
+
+  # ── Workflow engine ─────────────────────────────────────────────────────────
+  airbyte-temporal:
+    image: temporalio/auto-setup:1.23.0
+    container_name: airbyte-temporal
+    logging: *default-logging
+    restart: unless-stopped
+    depends_on:
+      - airbyte-db
+    environment:
+      DB: postgresql
+      DB_PORT: 5432
+      POSTGRES_USER: airbyte
+      POSTGRES_PWD: airbyte
+      POSTGRES_SEEDS: airbyte-db
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/dynamicconfig/development.yaml
+    volumes:
+      - ./config/dynamicconfig/development.yaml:/etc/temporal/dynamicconfig/development.yaml:ro
+    networks:
+      - airbyte_internal
+
+  # ── DB migrations / schema bootstrapper ────────────────────────────────────
+  airbyte-bootloader:
+    image: airbyte/bootloader:0.50.33
+    container_name: airbyte-bootloader
+    logging: *default-logging
+    depends_on:
+      - airbyte-db
+      - airbyte-temporal
+    environment:
+      AIRBYTE_VERSION: 0.50.33
+      DATABASE_URL: jdbc:postgresql://airbyte-db:5432/airbyte
+      DATABASE_USER: airbyte
+      DATABASE_PASSWORD: airbyte
+      LOG_LEVEL: INFO
+      RUN_DATABASE_MIGRATION_ON_STARTUP: "true"
+    networks:
+      - airbyte_internal
+
+  # ── API / config server ─────────────────────────────────────────────────────
+  airbyte-server:
+    image: airbyte/server:0.50.33
+    container_name: airbyte-server
+    logging: *default-logging
+    restart: unless-stopped
+    depends_on:
+      - airbyte-bootloader
+    ports:
+      - "8001:8001"
+    environment:
+      AIRBYTE_VERSION: 0.50.33
+      CONFIGS_DATABASE_MINIMUM_FLYWAY_MIGRATION_VERSION: 0.35.15.001
+      JOBS_DATABASE_MINIMUM_FLYWAY_MIGRATION_VERSION: 0.29.15.001
+      CONFIG_ROOT: /data
+      DATABASE_URL: jdbc:postgresql://airbyte-db:5432/airbyte
+      DATABASE_USER: airbyte
+      DATABASE_PASSWORD: airbyte
+      JOB_ERROR_REPORTING_STRATEGY: LOGGING
+      LOG_LEVEL: INFO
+      MICRONAUT_ENVIRONMENTS: control-plane
+      SECRET_PERSISTENCE: TESTING_CONFIG_DB_TABLE
+      TEMPORAL_HOST: airbyte-temporal:7233
+      TRACKING_STRATEGY: logging
+      WEBAPP_URL: http://localhost:8000
+      WORKSPACE_ROOT: /tmp/workspace
+    volumes:
+      - airbyte_workspace:/tmp/workspace
+    networks:
+      - airbyte_internal
+      - medallion_net
+
+  # ── Sync worker ─────────────────────────────────────────────────────────────
+  # Spawns connector containers via Docker socket.
+  # WORKER_JOB_MAIN_CONTAINER_NETWORK attaches those containers to
+  # medallion_net so they resolve `clickhouse` by name.
+  airbyte-worker:
+    image: airbyte/worker:0.50.33
+    container_name: airbyte-worker
+    logging: *default-logging
+    restart: unless-stopped
+    depends_on:
+      - airbyte-bootloader
+    environment:
+      AIRBYTE_VERSION: 0.50.33
+      INTERNAL_API_HOST: airbyte-server:8001
+      CONTAINER_ORCHESTRATOR_ENABLED: "false"
+      DOCKER_API_VERSION: "1.44"
+      DATABASE_URL: jdbc:postgresql://airbyte-db:5432/airbyte
+      DATABASE_USER: airbyte
+      DATABASE_PASSWORD: airbyte
+      DOCKER_NETWORK: medallion_net
+      JOB_ERROR_REPORTING_STRATEGY: LOGGING
+      LOCAL_DOCKER_MOUNT: /tmp/airbyte_local
+      LOCAL_ROOT: /tmp/airbyte_local
+      LOG_LEVEL: INFO
+      MICRONAUT_ENVIRONMENTS: control-plane
+      SECRET_PERSISTENCE: TESTING_CONFIG_DB_TABLE
+      TEMPORAL_HOST: airbyte-temporal:7233
+      WORKSPACE_DOCKER_MOUNT: airbyte_workspace
+      WORKSPACE_ROOT: /tmp/workspace
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - airbyte_workspace:/tmp/workspace
+      - /tmp/airbyte_local:/tmp/airbyte_local
+    networks:
+      - airbyte_internal
+      - medallion_net
+
+  # ── Connector builder server ────────────────────────────────────────────────
+  airbyte-connector-builder-server:
+    image: airbyte/connector-builder-server:0.50.33
+    container_name: airbyte-connector-builder-server
+    logging: *default-logging
+    restart: unless-stopped
+    expose:
+      - "80"
+    environment:
+      AIRBYTE_VERSION: 0.50.33
+    networks:
+      - airbyte_internal
+
+  # ── React web UI ────────────────────────────────────────────────────────────
+  airbyte-webapp:
+    image: airbyte/webapp:0.50.33
+    container_name: airbyte-webapp
+    logging: *default-logging
+    restart: unless-stopped
+    depends_on:
+      - airbyte-server
+      - airbyte-connector-builder-server
+    ports:
+      - "8000:80"
+    environment:
+      AIRBYTE_SERVER_HOST: airbyte-server
+      AIRBYTE_SERVER_PORT: 8001
+      AIRBYTE_SERVER_PROTO: http
+      INTERNAL_API_HOST: airbyte-server:8001
+      KEYCLOAK_INTERNAL_HOST: airbyte-db
+      CONNECTOR_BUILDER_API_HOST: airbyte-connector-builder-server
+      TRACKING_STRATEGY: logging
+    networks:
+      - airbyte_internal
+      - medallion_net
