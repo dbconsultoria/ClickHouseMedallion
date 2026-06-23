@@ -74,9 +74,34 @@ Two bridge networks with **explicit subnets** to avoid Docker auto-assignment ov
 
 ---
 
-## Starting the Stack
+## stack.sh — Automation Script
 
-**Order matters — ClickHouse must start first** (it creates `medallion_net`).
+All stack operations are managed by `stack.sh` at the project root.
+
+```bash
+chmod +x stack.sh   # first time only
+
+./stack.sh up               # start ClickHouse + Airbyte (with health checks)
+./stack.sh down             # stop the stack
+./stack.sh restart          # stop + start
+./stack.sh status           # container status for both composes
+./stack.sh health           # HTTP health check on all 4 endpoints
+./stack.sh dbt              # run full dbt pipeline (debug → Silver → Gold → test)
+./stack.sh logs             # tail logs: clickhouse + airbyte-server + airbyte-worker
+./stack.sh logs airbyte-server  # tail logs for a specific service
+./stack.sh reset            # remove all volumes and restart (DESTRUCTIVE)
+./stack.sh help             # show all commands
+```
+
+`up` handles startup order automatically: ClickHouse first (creates `medallion_net`), waits for healthy, creates `bronze` database, then starts Airbyte and waits for the API.
+
+`dbt` creates the Python virtualenv and installs `dbt-core` + `dbt-clickhouse` on first run.
+
+---
+
+## Starting the Stack (manual)
+
+If not using `stack.sh`, order matters — ClickHouse must start first (it creates `medallion_net`).
 
 ```bash
 # 1. Start ClickHouse (creates medallion_net)
