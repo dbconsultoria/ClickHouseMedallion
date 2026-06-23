@@ -1,4 +1,4 @@
-# ClickHouse Medallion Architecture — Bronze + Silver
+# ClickHouse Medallion Architecture, Airbyte/dbt/clickhouse
 
 Local implementation of a Medallion architecture with Bronze and Silver layers. MySQL is the source, Airbyte OSS handles ingestion into ClickHouse (Bronze), and dbt transforms and enriches the data into the Silver layer.
 
